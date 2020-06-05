@@ -6,7 +6,7 @@ Distributed under the terms of the GPL v3 License.
 
 The full license is in the file LICENSE, distributed with this software.
 
-Parses an SVG document into a QPainterPath. Adapted from inkscape's path
+Parses an SVG document into a QPainterPath. Adapted from inkscape's path 
 parsers written by Aaron Spike.
 
 Created on Jan 5, 2015
@@ -20,18 +20,71 @@ from math import sqrt, tan, atan, atan2, cos, acos, sin, pi, radians
 from lxml import etree
 from copy import deepcopy
 from enaml.qt import QtGui, QtCore
+from atom.api import Atom, Unicode, Range, Bool, Float
+# -----------------------------------------------------------------------------
+# Logger
+# -----------------------------------------------------------------------------
+import logging
+log = logging.getLogger("inkcut")
 
 ElementType = QtGui.QPainterPath.ElementType
 EtreeElement = etree._Element
 
+# -----------------------------------------------------------------------------
+# SVG Layers filtering
+# -----------------------------------------------------------------------------
+
+"""   Inkscape
+
+    inkscape uses the group tag (G) for describing a layer
+
+    <g
+     inkscape:groupmode="layer"
+     id="layer2"
+     inkscape:label="coupe"
+     style="display:inline"
+     transform="translate(0,-87)"
+     sodipodi:insensitive="true">
+    >
+
+    attribute name "inkscape:" is translated to
+            if e.get ("{http://www.inkscape.org/namespaces/inkscape}groupmode") == "layer":
+
+
+    Loading a document is too step.
+    -find Layer definitions and mark them load=False when not "display:inline".
+     eg, Layers not visible in Inkscape are skipped
+    -load the actual data and ignore layers marked not enabled
+
+    A specific DockItem lists all the layer's definition
+    and reload the doc when necessary
+
+    TODO:
+            -rotate the layer to facilitate rearangements
+            by inserting/modifying the transform attached to the group
+            (usefull for painting mask layers)
+            -one color / layer
+            -use mouse to move layers
+"""
+class Layer(Atom):
+    name = Unicode()           # displayed name
+    loaded = Bool(False)      # the xml for this layer is loaded or not
+    enabled = Bool(True)      # when loaded, use it or not
+    offsetX = Float().tag(config=True)
+    offsetY = Float()
+    #rotate  = Range()
+
+#List of layers to load
+gLayers=[]    # not wise to pass it as parameter for each QtSvgItemXXXX when only QtSvgItemG requires it
 
 class QtSvgItem(QtGui.QPainterPath):
     tag = None
+    #xgLayers = []          #recursivity kills it
     _nodes = None
     _uuconv = {'in': 90.0, 'pt': 1.25, 'px': 1, 'mm': 3.5433070866,
                'cm': 35.433070866, 'm': 3543.3070866,
                'km': 3543307.0866, 'pc': 15.0, 'yd': 3240, 'ft': 1080}
-
+    
     def __init__(self, e, nodes=None, **kwargs):
         if not isinstance(e, EtreeElement):
             raise TypeError("%s only works with etree Elements, "
@@ -43,22 +96,22 @@ class QtSvgItem(QtGui.QPainterPath):
 
         self._nodes = nodes
         self._e = e
-
+        
         # Parse from node
         self.parse(e)
-
+        
         # Parse transform
         self *= self.parseTransform(e)
-
+        
     def __imul__(self, m):
-        """ Do in place multiplication by subtracting everything from itself
-        then adding the multiplied values back.
+        """ Do in place multiplication by subtracting everything from itself 
+        then adding the multiplied values back. 
         """
         tmp = self*m
         self -= self
         self += tmp
         return self
-
+    
     @staticmethod
     def toSubpathList(self):
         paths = []
@@ -84,7 +137,7 @@ class QtSvgItem(QtGui.QPainterPath):
         if not path.isEmpty():
             paths.append(path)
         return paths
-
+    
     @staticmethod
     def splitAtPercent(self, t):
         paths = []
@@ -110,10 +163,10 @@ class QtSvgItem(QtGui.QPainterPath):
         if not path.isEmpty():
             paths.append(path)
         return paths
-
+    
     @staticmethod
     def parseUnit(value):
-        """ Returns userunits given a string representation of units
+        """ Returns userunits given a string representation of units 
         in another system
         """
 
@@ -126,7 +179,7 @@ class QtSvgItem(QtGui.QPainterPath):
         unit = re.compile('(%s)$' % '|'.join(QtSvgItem._uuconv.keys()))
         param = re.compile(
             r'(([-+]?[0-9]+(\.[0-9]*)?|[-+]?\.[0-9]+)([eE][-+]?[0-9]+)?)')
-
+    
         p = param.match(value)
         u = unit.search(value)
         if p:
@@ -139,90 +192,81 @@ class QtSvgItem(QtGui.QPainterPath):
             except KeyError:
                 pass
         return retval
-
+    
     @staticmethod
     def convertToUnit(val, unit='px'):
         """ Convert from px to given unit """
         return val/QtSvgItem._uuconv[unit]
-
+    
     @staticmethod
     def convertFromUnit(val, unit='px'):
         """ Convert from given unit to px """
         return QtSvgItem._uuconv[unit]*val
-
+        
     def parse(self, e):
         raise NotImplementedError("Parse must be implemented in sublcasses!")
-
+    
     def parseTransform(self, e):
-        """ Based on simpletrasnform.py by from
+        """ Based on simpletrasnform.py by from 
         Jean-Francois Barraud, barraud@math.univ-lille1.fr
 
         """
         t = QtGui.QTransform()
-
+        
         if isinstance(e, EtreeElement):
             trans = e.attrib.get('transform', '').strip()
         else:
             trans = e # e is a string of the previous transform
-
+        
         if not trans:
             return t
-
+        
         m = re.match(
             "(translate|scale|rotate|skewX|skewY|matrix)\s*\(([^)]*)\)\s*,?",
             trans)
         if m is None:
             return t
-
+        
         name, args = m.group(1), m.group(2).replace(',', ' ').split()
-
+        
         if name == "translate":
-            # The translate(<x> [<y>]) transform function moves the object
-            # by x and y. If y is not provided, it is assumed to be 0.
             dx = float(args[0])
-            dy = float(args[1]) if len(args) == 2 else 0
+            #TODO bug or explain folllowing line !
+            #dy = len(args) == 2 and float(args[1]) or dx
+            if len(args) == 2:
+                dy = float(args[1])
+            else:
+                dy = dx
             t.translate(dx, dy)
 
+            
         elif name == "scale":
-            # The scale(<x> [<y>]) transform function specifies a scale
-            # operation by x and y. If y is not provided, it is assumed to
-            # be equal to x.
             sx = float(args[0])
-            sy = float(args[1]) if len(args) == 2 else sx
+            sy = len(args) == 2 and float(args[1]) or sx
             t.scale(sx, sy)
-
+             
         elif name == "rotate":
-            # The rotate(<a> [<x> <y>]) transform function specifies a
-            # rotation by a degrees about a given point. If optional
-            # parameters x and y are not supplied, the rotation is about the
-            # origin of the current user coordinate system. If optional
-            # parameters x and y are supplied, the rotation is about the
-            # point (x, y).
             if len(args) == 1:
                 cx, cy = (0, 0)
             else:
                 cx, cy = map(float, args[1:])
-
+            
             t.translate(cx, cy)
             t.rotate(float(args[0]))
             t.translate(-cx, -cy)
-
+            
         elif name == "skewX":
-            # The skewX(<a>) transform function specifies a skew transformation
-            # along the x axis by a degrees.
             t.shear(math.tan(float(args[0])*math.pi/180.0), 0)
 
         elif name == "skewY":
-            # The skewY(<a>) transform function specifies a skew transformation
-            # along the y axis by a degrees.
             t.shear(0, math.tan(float(args[0])*math.pi/180.0))
-
+            
         elif name == "matrix":
             t = t*QtGui.QTransform(*map(float, args))
-
+        
         if m.end() < len(trans):
             t = self.parseTransform(trans[m.end():])*t
-
+            
         return t
 
     def __str__(self):
@@ -231,7 +275,7 @@ class QtSvgItem(QtGui.QPainterPath):
 
 class QtSvgEllipse(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}ellipse"
-
+    
     def parse(self, e):
         c = QtCore.QPointF(*map(self.parseUnit, (e.attrib.get('cx', 0),
                                                  e.attrib.get('cy', 0))))
@@ -242,7 +286,7 @@ class QtSvgEllipse(QtSvgItem):
 
 class QtSvgCircle(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}circle"
-
+    
     def parse(self, e):
         c = QtCore.QPointF(*map(self.parseUnit, (e.attrib.get('cx', 0),
                                                  e.attrib.get('cy', 0))))
@@ -252,7 +296,7 @@ class QtSvgCircle(QtSvgItem):
 
 class QtSvgLine(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}line"
-
+    
     def parse(self, e):
         x1, y1, x2, y2 = map(self.parseUnit, (
                 e.attrib.get('x1', 0), e.attrib.get('y1', 0),
@@ -264,7 +308,7 @@ class QtSvgLine(QtSvgItem):
 
 class QtSvgRect(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}rect"
-
+    
     def parse(self, e):
         x, y, w, h, rx, ry = map(self.parseUnit, (
                     e.attrib.get('x', 0), e.attrib.get('y', 0),
@@ -272,10 +316,10 @@ class QtSvgRect(QtSvgItem):
                     e.attrib.get('rx', 0), e.attrib.get('ry', 0),
                 )
         )
-
+        
         if rx == 0 and ry == 0:
             self.addRect(x, y, w, h)
-        else:
+        else: 
             if rx == 0:
                 rx = ry
             elif ry == 0:
@@ -285,7 +329,7 @@ class QtSvgRect(QtSvgItem):
 
 class QtSvgPath(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}path"
-
+    
     # From  simplepath.py's parsePath by Aaron Spike, aaron@ekips.org
     pathdefs = {
         'M': ['L', 2, [float, float], ['x', 'y']],
@@ -403,7 +447,7 @@ class QtSvgPath(QtSvgItem):
         """
         From  simplepath.py's parsePath by Aaron Spike, aaron@ekips.org
 
-        returns and iterator that breaks path data
+        returns and iterator that breaks path data 
         identifies command and parameter tokens
         """
         offset = 0
@@ -429,22 +473,22 @@ class QtSvgPath(QtSvgItem):
                 offset = m.end()
                 continue
             raise ValueError('Invalid path data at %s!' % offset)
-
+        
     def parsePath(self, d):
         """
         From  simplepath.py's parsePath by Aaron Spike, aaron@ekips.org
-
+        
         Parse SVG path and return an array of segments.
         Removes all shorthand notation.
         Converts coordinates to absolute.
         """
         lexer = self.pathLexer(d)
-
+    
         pen = (0.0, 0.0)
         subPathStart = pen
         lastControl = pen
         lastCommand = ''
-
+        
         while True:
             try:
                 token, isCommand = next(lexer)
@@ -456,7 +500,7 @@ class QtSvgPath(QtSvgItem):
                 if not lastCommand and token.upper() != 'M':
                     raise ValueError('Invalid path, must begin with moveto ('
                                      'M or m), given %s.' % lastCommand)
-                else:
+                else:                
                     command = token
             else:
                 # command was omited
@@ -468,11 +512,11 @@ class QtSvgPath(QtSvgItem):
                     else:
                         command = self.pathdefs[lastCommand.upper()][0].lower()
                 else:
-                    raise ValueError('Invalid path, no initial command.')
+                    raise ValueError('Invalid path, no initial command.')    
             numParams = self.pathdefs[command.upper()][1]
             while numParams > 0:
                 if needParam:
-                    try:
+                    try: 
                         token, isCommand = next(lexer)
                         if isCommand:
                             raise ValueError('Invalid number of parameters '
@@ -491,7 +535,7 @@ class QtSvgPath(QtSvgItem):
                 numParams -= 1
             # segment is now absolute so
             outputCommand = command.upper()
-
+        
             # Flesh out shortcut notation
             if outputCommand in ('H', 'V'):
                 if outputCommand == 'H':
@@ -506,7 +550,7 @@ class QtSvgPath(QtSvgItem):
                     outputCommand = 'C'
                 if outputCommand == 'T':
                     outputCommand = 'Q'
-
+    
             # current values become "last" values
             if outputCommand == 'M':
                 subPathStart = tuple(params[0:2])
@@ -515,31 +559,31 @@ class QtSvgPath(QtSvgItem):
                 pen = subPathStart
             else:
                 pen = tuple(params[-2:])
-
+    
             if outputCommand in ('Q', 'C'):
                 lastControl = tuple(params[-4:-2])
             else:
                 lastControl = pen
-
+            
             lastCommand = command
-
+    
             yield [outputCommand, params]
 
 
 class QtSvgPolyline(QtSvgPath):
     tag = "{http://www.w3.org/2000/svg}polyline"
-
+    
     def parsePathData(self, e):
         d = e.attrib.get('points', '')
         if not d:
-            return
-
+            return 
+        
         return 'M '+d
 
 
 class QtSvgPolygon(QtSvgPolyline):
     tag = "{http://www.w3.org/2000/svg}polygon"
-
+    
     def parsePathData(self, e):
         d = super(QtSvgPolygon, self).parsePathData(e)
         if not d:
@@ -550,7 +594,7 @@ class QtSvgPolygon(QtSvgPolyline):
 class QtSvgUse(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}use"
     xlink = "{http://www.w3.org/1999/xlink}href"
-
+    
     def parseLink(self, e):
         link = e.attrib.get(self.xlink, '').split("#")
         if len(link) != 2:
@@ -558,12 +602,12 @@ class QtSvgUse(QtSvgItem):
                     "Cannot link to documents outside this "
                     "document, given %s!" % ("#".join(link),))
         link, id = link
-
+        
         svg = e.getroottree().getroot()
         ref = svg.xpath('//*[@id="%s"]' % id)
         if len(ref) > 0:
             return ref[0]
-
+        
     def parse(self, e):
         ref = self.parseLink(e)
         if ref is None:
@@ -574,7 +618,7 @@ class QtSvgUse(QtSvgItem):
             g = etree.Element(QtSvgG.tag)
             g.append(deepcopy(ref))
             self.addPath(QtSvgG(g, self._nodes))
-
+            
     def parseTransform(self, e):
         t = super(QtSvgUse, self).parseTransform(e)
         if isinstance(e, EtreeElement):
@@ -586,19 +630,19 @@ class QtSvgUse(QtSvgItem):
 
 class QtSvgText(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}text"
-
+    
     stylemap = {
         'normal': QtGui.QFont.StyleNormal,
         'italic': QtGui.QFont.StyleItalic,
         'oblique': QtGui.QFont.StyleOblique
     }
-
+    
     def parse(self, e):
         x, y = map(self.parseUnit, (e.attrib.get('x', 0),
                                     e.attrib.get('y', 0)))
         font = self.parseFont(e)
         self.addText(x, y, font, e.text)
-
+    
     def parseFont(self, e):
         """
         font-style:italic;
@@ -621,14 +665,14 @@ class QtSvgText(QtSvgItem):
         stroke-linecap:butt;
         stroke-linejoin:miter;
         stroke-opacity:1
-
+        
         """
         font = QtGui.QFont()
         styles = {}
         for item in e.attrib.get('style', '').split(";"):
             k, v = item.split(":")
             styles[k.lower()] = v.lower()
-
+        
         if 'font-style' in styles:
             font.setStyle(self.stylemap.get(
                 styles['font-style'].lower(), 'normal'))
@@ -645,11 +689,23 @@ class QtSvgText(QtSvgItem):
         #    font.setLineHeight(self.parseUnit(styles['font-size']))
         return font
 
-
 class QtSvgG(QtSvgItem):
     tag = "{http://www.w3.org/2000/svg}g"
 
     def parse(self, e):
+
+        # An inkscape Layer definition in this G group ?
+        if e.get ("{http://www.inkscape.org/namespaces/inkscape}groupmode") == "layer":
+            name = e.get ("{http://www.inkscape.org/namespaces/inkscape}label")
+            for l in gLayers:
+                #if layer is disabled or not loaded, do not add the branch
+                if name == l.name:
+                    if not l.enabled or not l.loaded:
+                        return
+                    #update the transform to offset the layer
+                    e.set ("transform", "translate(" + str(l.offsetX) + ","  + str(l.offsetY) +")" )
+                    break
+
         valid_nodes = self._nodes
         for node in e:
             if node.tag == QtSvgText.tag:
@@ -675,21 +731,50 @@ class QtSvgG(QtSvgItem):
                 if node.tag == cls.tag:
                     self.addPath(cls(node, valid_nodes))
                     break
-
+    
 
 class QtSvgSymbol(QtSvgG):
     tag = "{http://www.w3.org/2000/svg}symbol"
 
+class QtSvgLayers(QtSvgG):
+
+    def __init__(self, e):
+        pass
+
+    def get(e):
+        """
+        Count and register G tags that are Inkscape Layers
+        Parameters
+        ----------
+            e: Element or string
+                An lxml etree.Element or an argument to pass to etree.parse()
+        """
+        Layers = []             # list of layers discovered
+        doc = etree.parse(e)
+        svg = doc.getroot()
+        for node in svg.iter("{http://www.w3.org/2000/svg}g"):
+            if node.get ("{http://www.inkscape.org/namespaces/inkscape}groupmode") == "layer":
+                l = Layer()
+                l.name = node.get ("{http://www.inkscape.org/namespaces/inkscape}label")
+                l.offsetX = 0
+                l.offsetY = 0
+                l.enabled = True
+                if node.get ("style") is not None:
+                    l.loaded = re.match ("display:.*inline", node.get ("style") ) is not None
+                #log.info("Accepted Layer :" + l.name +" enabled:"+str(l.enabled))
+                #TODO: append only Layers that have something displayable
+                Layers.append(l)
+        return Layers
 
 class QtSvgDoc(QtSvgG):
     tag = "{http://www.w3.org/2000/svg}svg"
 
-    def __init__(self, e, ids=None):
+    def __init__(self, e, Layers, ids=None):
         """
-        Creates a QtPainterPath from an SVG document applying all transforms.
-
+        Creates a QtPainterPath from an SVG document applying all transforms. 
+        
         Does NOT include any styling.
-
+        
         Parameters
         ----------
             e: Element or string
@@ -697,6 +782,14 @@ class QtSvgDoc(QtSvgG):
             ids: List
                 List of node ids to include. If not given all will be used.
         """
+
+	#ok I don't know how to make gLayers available to all svgXXX classes
+	#tried to declare it inside the base class.-
+        global gLayers
+        gLayers  = Layers
+        #self.xgL = Layers        # not working because of recursitivy
+
+
         self.isParentSvg = not isinstance(e, EtreeElement)
         if self.isParentSvg:
             self._doc = etree.parse(e)
@@ -718,9 +811,9 @@ class QtSvgDoc(QtSvgG):
                 self._nodes = valid_nodes
 
             self.viewBox = QtCore.QRectF(0, 0, -1, -1)
-
+        
         super(QtSvgDoc, self).__init__(self._svg, self._nodes)
-
+    
     def parseTransform(self, e):
         t = QtGui.QTransform()
         # transforms don't apply to the root svg element, but we do need to
@@ -748,5 +841,5 @@ class QtSvgDoc(QtSvgG):
             x, y = map(self.parseUnit, (e.attrib.get('x', 0),
                                         e.attrib.get('y', 0)))
             t.translate(x, y)
-
+            
         return t

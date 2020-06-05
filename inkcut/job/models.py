@@ -21,10 +21,16 @@ from atom.api import (
 from contextlib import contextmanager
 from enaml.qt import QtCore, QtGui
 from inkcut.core.api import Model, AreaBase
-from inkcut.core.svg import QtSvgDoc
+from inkcut.core.svg import QtSvgDoc, QtSvgLayers, Layer
 from inkcut.core.utils import split_painter_path
 
 from . import ordering
+
+# -----------------------------------------------------------------------------
+# Logger
+# -----------------------------------------------------------------------------
+import logging
+log = logging.getLogger("inkcut")
 
 
 class Material(AreaBase):
@@ -180,6 +186,9 @@ class Job(Model):
     plot_weedline_padding = ContainerList(
         Float(), default=[10, 10, 10, 10]).tag(config=True)
 
+
+    layers = ContainerList(Layer).tag(config=True)
+
     order = Enum(*sorted(ordering.REGISTRY.keys())).tag(config=True)
 
     def _default_order(self):
@@ -215,7 +224,13 @@ class Job(Model):
             #: startup
             self.path = QtSvgDoc(sys.stdin, **self.document_kwargs)
         elif self.document and os.path.exists(self.document):
-            self.path = QtSvgDoc(self.document, **self.document_kwargs)
+            self.layers = QtSvgLayers.get(self.document)
+            self.path = QtSvgDoc(self.document, self.layers, **self.document_kwargs)
+
+    def update_document(self):
+        """ for now, not working for reading from command stdin """
+        if self.document != '-':
+            self.path = QtSvgDoc(self.document, self.layers, **self.document_kwargs)
 
     def _create_copy(self):
         """ Creates a copy of the original graphic applying the given
